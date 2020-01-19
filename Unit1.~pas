@@ -17,7 +17,6 @@ type
     Button2: TButton;
     Label3: TLabel;
     Button4: TButton;
-    StringGrid1: TStringGrid;
     Button5: TButton;
     Button6: TButton;
     Button14: TButton;
@@ -44,6 +43,9 @@ type
     Button15: TButton;
     StringGrid2: TStringGrid;
     Button16: TButton;
+    Button20: TButton;
+    StringGrid1: TStringGrid;
+    Label2: TLabel;
     procedure EnableButtons;
     procedure Image1MouseMove(Sender: TObject; Shift: TShiftState; X,
       Y: Integer);
@@ -90,6 +92,7 @@ type
     LineID:    array [1..10] of byte;  //ID's of edges connected
     ID:        word;                   //Vertice №
     constructor Create;
+    procedure Equalize (out VerticeOut: TVertice);
   end;
 
   TEdge = class
@@ -98,13 +101,13 @@ type
     ID:       word;    //edge №
     side1:    word;    //vertice 1
     side2:    word;    //vertice 2
-    eR:       word;    //active imp. 0=none
+    eR:       real;    //active imp. 0=none
     eL:       word;    //coil        0=none
     eC:       word;    //capacitor   0=none
-    IISrc:     byte;    //independent source. produces: 0=none, 1=current, 2=voltage
+    IISrc:     byte;    //independent source. produces: 0=none, 1=current
     IISPhase:  real;    //IS's phase, degrees
     IISAmp:    real;    //IS's amplitude
-    IUSrc:     byte;    //independent source. produces: 0=none, 1=current, 2=voltage
+    IUSrc:     byte;    //independent source. produces: 0=none, 1=voltage
     IUSPhase:  real;    //IS's phase, degrees
     IUSAmp:    real;    //IS's amplitude
     DSrc:     integer;    //dependent source. produces: 0=none, 1=current, 2=voltage
@@ -139,6 +142,8 @@ type
     constructor Create;
     procedure CreateSelf (p: byte); //0 for inside, 1 for file, 2 for simple
     procedure EnumEdges;
+    procedure NewZYMatrix (h: real); //replace common Z, Y matrix with  special synth one
+    function SolveSynth: Matrix;
     function SDependentMesh:Matrix;
     function SDependentCut: Matrix;
     function SDependentMKT: Matrix;
@@ -148,8 +153,9 @@ type
     function SolveCut: Matrix;
     function Solve:    Matrix;
     function SolveNVM: Matrix;  //Node Voltages Method
-    function SolveMKT: Matrix;
+    function SolveMKT (p:integer=0): Matrix;
     procedure Restore;
+    procedure DeleteEdge (EdgeNum: word);
     procedure SpreadCS (EdgeNum: word); //spreads a current source to random counter around it
     procedure CreateMatrix;  //MType: 0=Incidence, 1=Cycle, 2=Cut
     function SubTreeVertices (Vertice: word; Way: Path): Path;
@@ -170,8 +176,10 @@ type
     procedure DrawElem (x1, y1, x2, y2, elem: integer; color:TColor=clblack); //elem: 1=R; 2=L; 3=C;
                                                                               //      4=IS(I); 5=IS(U);                                                                             //      6=DS(I); 7=DS(U);
   end;
-
+  const deltaT=0.0001;      //dt for synth method (a.k.a "h")
+        FullT=0.05; //full time for integral
 var
+  resultUC:array[1..24,0..500] of real;  //1..12: I; 13..24: U
   GraphSet: boolean;
   locale: string;
   Form1: TForm1;
@@ -224,6 +232,115 @@ begin
   Enabled:=true;
 end;
 
+procedure TGraph.NewZYMatrix(h: Real);
+var a, b: integer;
+R, L, C: real;
+begin
+  for a:=1 to EdgeCount do begin
+    R:=Edges[a].eR;
+    L:=Edges[a].eL/1000;
+    C:=Edges[a].eC/1000000;
+    if (Edges[a].eL>0) or (Edges[a].eC>0) then Edges[a].IISrc:=1;
+    Edges[a].IISPhase:=Edges[a].eL;         //this is maxximum bull shit
+    Edges[a].IUSPhase:=Edges[a].eC;
+    Edges[a].eL:=0;
+    Edges[a].eC:=0;
+    if L>0 then
+      MY.Comp[a,a].Re:=h/L;
+    if C>0 then
+      MY.Comp[a,a].Re:=C/h;
+    MZ.Comp[a,a].Re:=1/MY.Comp[a,a].Re;
+    Edges[a].eR:=MZ.Comp[a,a].Re;
+  end;
+  DefineVertices;
+  DrawGraph;
+end;
+
+
+function TGraph.SolveSynth: Matrix;
+var
+a, b, c, ticks, rec: integer;
+h, T: real;  //h = "dt", T = full integral time
+StepUI, StepUI2, StepJ, cacheZ, cacheY: Matrix; //stores each step's UC and IL for further usage
+
+begin
+  CreateMatrix;
+  StepUI:=SolveMKT;
+  Form1.PrintMatrix(StepUI);
+  for a:=0 to 100 do
+    for rec:=1 to 12 do begin
+      ResultUC[rec,a]:=StepUI.Comp[rec,1].Re;
+      ResultUC[rec+12,a]:=StepUI.Comp[rec,2].Re;
+    end;
+//  Result:=SolveMKT(1);
+  NewZYMatrix(deltaT);
+  cacheZ:=MZ;
+  cacheY:=MY;
+  StepJ:=MJ;
+  for a:=1 to EdgeCount do begin
+    if Edges[a].IUSPhase>0 then begin //determining actual U_C's
+      //StepUI.Comp[a,2].Re:=StepUI.Comp[a,2].Re-Edges[a].eR*StepUI.Comp[a,1].Re;  //deltaU - IR = U_C
+      StepJ.Comp[1,a].Re:=Edges[a].IUSPhase/1000000*StepUI.Comp[a,2].Re/deltaT;
+    end;
+    if Edges[a].IISPhase>0 then
+      StepJ.Comp[1,a].Re:=-StepUI.Comp[a,1].Re;
+    if StepJ.Comp[1,a].Re<>0 then
+      Edges[a].IISrc:=1;
+
+    Edges[a].IISAmp:=StepJ.Comp[1,a].Re;
+    MJ:=StepJ;
+  end;
+  //ME:=StepJ;
+
+  Edges[1].eR:=1;
+  CreateMatrix;
+  cacheZ.Comp[1,1].Re:=1;
+  cacheY.Comp[1,1].Re:=1;
+  MZ:=cacheZ;
+  MY:=cacheY;
+  ticks:=round(FullT/deltaT);  //part 2. iterations
+  for b:=100 to 300 do begin
+    form1.Button20.Caption:=inttostr(b);
+    StepUI2:=SolveMKT(1);       //taking previously recorded IISAmp's aswell
+    //StepJ:=MJ;
+    for a:=1 to EdgeCount do begin
+      if Edges[a].IUSPhase>0 then begin       //.eC>0
+        //StepUI2.Comp[a,2].Re:=StepUI2.Comp[a,2].Re-Edges[a].eR*StepUI2.Comp[a,1].Re;
+        MJ.Comp[1,a].Re:=Edges[a].IUSPhase/1000000*StepUI2.Comp[a,2].Re/deltaT;  //J = -C/h*U_C(n)
+      end;
+      if Edges[a].IISPhase>0 then          //.eL>0
+        MJ.Comp[1,a].Re:=-StepUI2.Comp[a,1].Re;
+      Edges[a].IISAmp:=MJ.Comp[1,a].Re;
+    end;
+    //MJ:=StepJ;
+    for rec:=1 to 12 do begin
+      ResultUC[rec,b]:=StepUI2.Comp[rec,1].Re;
+      ResultUC[rec+12,b]:=StepUI2.Comp[rec,2].Re;
+    end;
+
+//    ResultUC[1,b]:=StepUI2.Comp[6,2].Re;
+  end;
+  Result:=SolveMKT;
+end;
+
+procedure TVertice.Equalize(out VerticeOut: TVertice);
+begin
+
+end;
+
+procedure TGraph.DeleteEdge(EdgeNum: word);
+var a: integer;
+cacheEdge: TEdge;
+cacheVertice: TVertice;
+begin
+  for a:=EdgeNum+1 to EdgeCount do begin
+    dec(Edges[a].ID);
+    Edges[a].Equalize(Edges[a-1]);
+  end;
+  dec(EdgeCount);
+  DefineVertices;
+end;
+
 procedure TForm1.EnableButtons;
 begin
   button23.Enabled:=true;
@@ -238,6 +355,8 @@ begin
   button18.Enabled:=true;
   button14.Enabled:=true;
   button22.Enabled:=true;
+  button16.Enabled:=true;
+  button20.Enabled:=true;
 end;
 
 procedure TGraph.CreateSelf(p: byte);
@@ -248,53 +367,71 @@ begin
   self.Create;
   case p of
   0: begin               //0 = from 'internal memory'
-    VerticeCount:=7;
-    EdgeCount:=12;
-    Freq:=250;                    //Hz
+    VerticeCount:=11; //7
+    EdgeCount:=16;   //12
+    Freq:=0;                    //Hz
     Phase:=0;
 
+    //Edges[1].Enabled:=false;
     Edges[1].ID:=1;
     Edges[1].side1:=1;
     Edges[1].side2:=2;
     Edges[1].IUSrc:=1;
     Edges[1].IUSAmp:=10;
-    Edges[1].IUSPhase:=Phase;
-    Edges[1].eR:=1;
+    Edges[1].IUSPhase:=0;
+    Edges[1].eR:=10000000000;
 
     Edges[2].ID:=2;
     Edges[2].side1:=2;
     Edges[2].side2:=3;
     Edges[2].eR:=3;
-    Edges[2].eL:=3;
+    //Edges[2].eL:=3;
 
     Edges[3].ID:=3;
-    Edges[3].side1:=5;
-    Edges[3].side2:=7;
-    Edges[3].DSrc:=2;
-    Edges[3].DSCoef:=0.5;
-    Edges[3].DSEdge:=7;
-    Edges[3].DSIn:=1;
-    Edges[3].eR:=1;
+    Edges[3].side1:=7;   // 5
+    Edges[3].side2:=11;   // 7
+    //Edges[3].DSrc:=2;
+    //Edges[3].DSCoef:=0.5;
+    //Edges[3].DSEdge:=7;
+    //Edges[3].DSIn:=1;
+    //Edges[3].eR:=1;
     Edges[3].eC:=500;
 
+    Edges[16].ID:=16;
+    Edges[16].side1:=5;
+    Edges[16].side2:=11;
+    Edges[16].eR:=1;
+
     Edges[4].ID:=4;
-    Edges[4].side1:=4;
-    Edges[4].side2:=5;
+    //Edges[4].eR:=1;
+    Edges[4].side1:=5;    // 4
+    Edges[4].side2:=10;     // 5
     Edges[4].eC:=300;
 
+    Edges[15].ID:=15;
+    Edges[15].side1:=4;
+    Edges[15].side2:=10;
+    Edges[15].eR:=1;
+
     Edges[5].ID:=5;
+    Edges[5].eR:=1;
     Edges[5].side1:=2;
     Edges[5].side2:=5;
     Edges[5].IISrc:=1;
     Edges[5].IISAmp:=1;
-    Edges[5].IISPhase:=3*Phase;
+    Edges[5].IISPhase:=0;
 
     Edges[6].ID:=6;
-    Edges[6].side1:=5;
-    Edges[6].side2:=6;
-    Edges[6].eR:=1;
-    Edges[6].eL:=5;
+    Edges[6].side1:=6;   //5
+    Edges[6].side2:=9;   //6
+    //Edges[6].eR:=1;
+    //Edges[6].eL:=5;
     Edges[6].eC:=200;
+
+    Edges[14].ID:=14;
+    Edges[14].side1:=5;
+    Edges[14].side2:=9;
+    Edges[14].eR:=1;
 
     Edges[7].ID:=7;
     Edges[7].side1:=3;
@@ -304,24 +441,30 @@ begin
     Edges[8].ID:=8;
     Edges[8].side1:=2;
     Edges[8].side2:=4;
-    Edges[8].DSrc:=1;
-    Edges[8].DSCoef:=0.1;
-    Edges[8].DSEdge:=12;
-    Edges[8].DSIn:=2;
+    //Edges[8].DSrc:=1;
+    //Edges[8].DSCoef:=0.1;
+    //Edges[8].DSEdge:=12;
+    //Edges[8].DSIn:=2;
     Edges[8].eL:=3;
 
     Edges[9].ID:=9;
-    Edges[9].side1:=2;
-    Edges[9].side2:=6;
-    Edges[9].eR:=5;
+    Edges[9].side1:=6;       //2
+    Edges[9].side2:=8;       //6
+    //Edges[9].eR:=5;
     Edges[9].eL:=1;
 
+    Edges[13].ID:=13;
+    Edges[13].side1:=2;
+    Edges[13].side2:=8;
+    Edges[13].eR:=5;
+
     Edges[10].ID:=10;
+    Edges[10].eR:=1;
     Edges[10].side1:=4;
     Edges[10].side2:=7;
     Edges[10].IUSrc:=1;
     Edges[10].IUSAmp:=10;
-    Edges[10].IUSPhase:=2*Phase;
+    Edges[10].IUSPhase:=0;
 
     Edges[11].ID:=11;
     Edges[11].side1:=1;
@@ -331,7 +474,16 @@ begin
     Edges[12].ID:=12;
     Edges[12].side1:=6;
     Edges[12].side2:=7;
-    Edges[12].eL:=3;
+    Edges[12].eR:=3;
+
+    //DeleteEdge(4);
+    //DeleteEdge(5);
+    //DeleteEdge(3);
+    //DeleteEdge(3);
+    //DeleteEdge(3);
+    //DeleteEdge(1);
+ //   DeleteEdge(6);
+  //  DeleteEdge(7);
   end;
   1: begin                        //1 = from file
     AssignFile(f, 'input.txt');
@@ -379,7 +531,7 @@ begin
     Edges[2].side1:=1;
     Edges[2].side2:=3;
     Edges[2].IISrc:=1;
-    Edges[2].IISAmp:=12*sqrt(2);
+    Edges[2].IISAmp:=12;
 
     Edges[3].ID:=3;
     Edges[3].side1:=1;
@@ -397,10 +549,10 @@ begin
     Edges[5].eR:=1;
   end;
   end;
-  for a:=1 to EdgeCount do begin
-    Edges[a].IISAmp:=Edges[a].IISAmp/sqrt(2);
-    Edges[a].IUSAmp:=Edges[a].IUSAmp/sqrt(2);
-  end;
+ // for a:=1 to EdgeCount do begin
+ //   Edges[a].IISAmp:=Edges[a].IISAmp/sqrt(2);
+  //  Edges[a].IUSAmp:=Edges[a].IUSAmp/sqrt(2);
+  //end;
 end;
 
 
@@ -658,12 +810,15 @@ begin
   Result:=Ik;
 end;
 
-function TGraph.SolveMKT: Matrix;
+function TGraph.SolveMKT (p:integer=0): Matrix;
 var a,b,c: integer;
 Zk, Ik, Ek, Ek1, Ek2, U: Matrix;
 GraphCache: TGraph;
 begin
-  CreateMatrix;
+  //CreateMatrix;
+  if p=1 then begin
+   // NewZYMatrix (deltaT);
+  end;
   Zk:=MatrixMult(MCyc, MZ);      //BZ
   Zk:=MatrixMult(Zk, transpose(MCyc));  //BZBt = Zk
   Zk:=MatrixInverse(Zk);
@@ -671,19 +826,19 @@ begin
   Ek2:=MatrixMult(MCyc, MZ);
   Ek2:=MatrixMult(Ek2, MJ);
   Ek:=MatrixSub(Ek1, Ek2);
-  Ik:=MatrixMult(Zk, Ek);
-  Ik:=MatrixMult(transpose(Ik),MCyc);
-  U:=MatrixAdd(transpose(Ik),MJ);     //  I+J
+  Result:=MatrixMult(Zk, Ek);
+  Result:=MatrixMult(transpose(Result),MCyc);
+  U:=MatrixAdd(transpose(Result),MJ);     //  I+J
   U:=MatrixMult(MZ, U);     //            Z(I+J)
   U:=MatrixSub(U, ME);      //            Z(I+J)-E
-  Ik.Y:=2;
+  Result.Y:=2;
   U:=transpose(U);
   for a:=1 to EdgeCount do begin
-    Ik.Body[a,2]:=U.Body[a,1];
-    Ik.Comp[a,2]:=U.Comp[a,1];
+    Result.Body[a,2]:=U.Body[a,1];
+    Result.Comp[a,2]:=U.Comp[a,1];
   end;
   //Form1.PrintMatrix(Ik);
-  Result:=Ik;
+  //Result:=Ik;
 end;
 
 function TGraph.SolveNVM: Matrix;
@@ -759,35 +914,29 @@ procedure TForm1.PrintMatrix(M:Matrix; Res: boolean=false);
 var a,b: integer;
 begin
   if not Res then begin
-    for a:=1 to 20 do StringGrid1.Cols[a].Clear;
+    for a:=1 to 20 do StringGrid2.Cols[a].Clear;
     for a:=1 to M.X do begin
       for b:=1 to M.Y do begin
-     // StringGrid1.Cells[a,b]:=floattostrf(M.Body[a,b],ffGeneral,3,3);
         StringGrid1.Cells[a,b]:=ComplString(M.Comp[a,b]);
-        StringGrid1.Cells[0,b]:=inttostr(b);
         StringGrid1.Cells[a,0]:=inttostr(a);
-      end;
+       end;
     end;
+    StringGrid1.Cells[0,1]:='I, A';
+    StringGrid1.Cells[0,2]:='U, V';
+    StringGrid1.Cells[0,0]:='Edge №';
   end;
 
   if Res then begin
     for a:=1 to 20 do StringGrid2.Cols[a].Clear;
     for a:=1 to M.X do begin
       for b:=1 to M.Y do begin
-        StringGrid2.Cells[a,b*2-1]:=ComplString(M.Comp[a,b]);
-       // StringGrid2.Cells[0,b]:=inttostr(b);
+        StringGrid2.Cells[a,b]:=ComplString(M.Comp[a,b]);
         StringGrid2.Cells[a,0]:=inttostr(a);
        end;
     end;
-    for a:=1 to M.X do begin
-      StringGrid2.Cells[a,2]:=floattostrf(ComplDeg(M.Comp[a,1]),ffGeneral,3,2);
-      StringGrid2.Cells[a,4]:=floattostrf(ComplDeg(M.Comp[a,2]),ffGeneral,3,2);
-    end;
     StringGrid2.Cells[0,1]:='I, A';
-    StringGrid2.Cells[0,3]:='U, V';
+    StringGrid2.Cells[0,2]:='U, V';
     StringGrid2.Cells[0,0]:='Edge №';
-    StringGrid2.Cells[0,2]:='Phase, deg';
-    StringGrid2.Cells[0,4]:='Phase, deg';
   end;
 end;
 
@@ -800,12 +949,12 @@ sinf, cosf: real;
 Way: Path;
 CutN: integer;
 led: boolean;
-inf: integer;
+inf: extended;
 Omega: extended;
 begin
-  inf:=999999;
+  inf:=9999999999;
 
-  for a:=1 to 20 do              //mesh
+  {or a:=1 to 20 do              //mesh
     for b:=1 to 20 do begin
       MMesh.Body[a,b]:=0;
       MMesh.Comp[a,b]:=Compl(0,0);
@@ -864,10 +1013,10 @@ begin
       end;
   end;
   MMesh.X:=EdgeCount;
-  MMesh.Y:=CycN;
+  MMesh.Y:=CycN; }
 
 //incidence
-  MInc.X:=EdgeCount;
+  {nc.X:=EdgeCount;
   MInc.Y:=VerticeCount-1;
   for a:=1 to 20 do
     for b:=1 to 20 do begin
@@ -882,7 +1031,7 @@ begin
 
     MInc.Comp[a,vert1]:=Compl(1,0);
     MInc.Comp[a,vert2]:=Compl(-1,0);
-  end;
+  end; }
 
         //cycle
   for a:=1 to 20 do
@@ -949,44 +1098,40 @@ begin
     ToAdd:=0;
     Omega:=2*PI*Freq;
     if Edges[a].eR>0 then ReZ:=ReZ+Edges[a].eR;
-    if Edges[a].eL>0 then ImZ:=ImZ+(Edges[a].eL*Omega)/1000;
-    if Edges[a].eC>0 then ImZ:=ImZ-1000000/(Omega*Edges[a].eC);
+    if Edges[a].eL>0 then ReZ:=ReZ+1/inf;//ImZ:=ImZ+(Edges[a].eL*Omega)/1000;
+    if Edges[a].eC>0 then ReZ:=inf;//ImZ:=ImZ-1000000/(Omega*Edges[a].eC);
     if Edges[a].IISrc=1 then begin
-      sinf:=sin(Edges[a].IISPhase*PI/180);
-      cosf:=cos(Edges[a].IISPhase*PI/180);
-      MJ.Body[1,a]:=Edges[a].IISAmp;
+      sinf:=sin(0*PI/180);
+      cosf:=cos(0*PI/180);
       MJ.Comp[1,a] := Compl(Edges[a].IISAmp*cosf, Edges[a].IISAmp*sinf);
     end;
     ToAdd:=sqrt(ReZ*ReZ+ImZ*ImZ);
     if not Edges[a].Enabled then begin
       ToAdd:=inf;
       ReZ:=inf;
-      ImZ:=inf;
+//      ImZ:=inf;
     end;
-    MZ.Body[a,a]:=ToAdd;
     MZ.Comp[a,a]:=Compl(ReZ, ImZ);
-     if ToAdd=0 then begin
-      MY.Body[a,a]:=inf;
-      MY.Comp[a,a]:=Compl(inf,inf);
+     if (ReZ=0) and (ImZ=0) then begin
+      MY.Comp[a,a]:=Compl(inf,0);
       end else begin
-        MY.Body[a,a]:=1/(ToAdd);
         MY.Comp[a,a]:=ComplDiv(Compl(1,0), Compl(ReZ, ImZ));
       end;
-    if (ToAdd=0) and (Edges[a].IISrc=1) then begin
-      MZ.Body[a,a]:=inf;
-      MZ.Comp[a,a]:=Compl(inf,inf);
-      MY.Body[a,a]:=0;
-      MY.Comp[a,a]:=Compl(0,0);
-    end;
-    if not Edges[a].Enabled then begin
-      MY.Body[a,a]:=0;
-      MY.Comp[a,a]:=Compl(0,0);
+    if (Edges[a].IISrc=1) and (ReZ=0) and (ImZ=0) then begin
+      MZ.Comp[a,a]:=Compl(inf,0);
+      MY.Comp[a,a]:=Compl(1/inf,0);
     end;
     if Edges[a].IUSrc=1 then begin
-      sinf:=sin(Edges[a].IUSPhase*PI/180);
-      cosf:=cos(Edges[a].IUSPhase*PI/180);
-      ME.Body[1,a]:=Edges[a].IUSAmp;
+      sinf:=sin(0*PI/180);
+      cosf:=cos(0*PI/180);
       ME.Comp[1,a]:=Compl(Edges[a].IUSAmp*cosf, Edges[a].IUSAmp*sinf);
+      if (ReZ=0)and(ImZ=0) then
+        MZ.Comp[a,a]:=Compl(1/inf,0);
+    end;
+    if not Edges[a].Enabled then begin
+      MY.Comp[a,a]:=Compl(1/inf,0);
+      ME.Comp[1,a]:=Compl(0,0);
+      MJ.Comp[1,a]:=Compl(0,0);
     end;
   end;
 end;
@@ -1038,6 +1183,7 @@ CutArr: Path;
 Way, WayOp: Path;
 N1, N2: Path;      //N1=number of tree vertices from .side1 of cut edge. N2 - from .side2
 TrueSide: integer;
+initEnableState: boolean;
 begin
   CutArr[0,0]:=1;
   b:=1;
@@ -1048,6 +1194,7 @@ begin
       WayOp[1,c]:=0;
       WayOp[0,c]:=0;
     end;
+    initEnableState:=Edges[EdgeNum].Enabled;
     Edges[EdgeNum].Enabled:=false;
     N1:=SubTreeVertices(Edges[EdgeNum].side1, WayOp);
     N2:=SubTreeVertices(Edges[EdgeNum].side2, WayOp);
@@ -1073,7 +1220,7 @@ begin
       end;
     end;
     Result:=CutArr;
-    Edges[EdgeNum].Enabled:=true;
+    Edges[EdgeNum].Enabled:=initEnableState;
   end;
 end;
 
@@ -1161,7 +1308,8 @@ Wood: boolean;
 begin
   EdgesN:=Vertices[Vertice].Degree;
   for a:=1 to EdgesN do begin   //searching for every vertice/edge connected to input vertice
-    LnID:=Vertices[Vertice].LineID[a];
+   LnID:=Vertices[Vertice].LineID[a];
+   if Edges[LnID].Enabled then begin
     if Edges[LnID].side1=Vertice then
       VertID:=Edges[LnID].side2 else
         VertID:=Edges[LnID].side1;    //here we found another Vertice ID!
@@ -1176,6 +1324,7 @@ begin
         exit else
           FindTree(VertID, Found+1);
     end;
+   end; 
   end;  //tree has been found
 end;
 
@@ -1231,13 +1380,16 @@ begin
 end;
 
 procedure TGraph.DrawGraph;
-var a:integer;
+var a,b:integer;
 begin
+  for a:=1 to 100 do
+    for b:=1 to 7 do
+      ElemXY[a,b]:=Point(-20,-20);
   Form1.Image1.Canvas.Font.Color:=clblue;
   Form1.Image1.Canvas.Brush.Color:=clwhite;
   Form1.Image1.Canvas.FillRect(Form1.Image1.Canvas.cliprect);
   for a:=1 to EdgeCount do
-    DrawEdge(a);
+    if Edges[a].Enabled then DrawEdge(a);
 
   Form1.Image1.Canvas.Pen.Color:=clblack;
   Form1.Image1.Canvas.Brush.Color:=clred;
@@ -1248,7 +1400,9 @@ begin
   Form1.Image1.Canvas.Brush.Color:=clwhite;
   for a:=1 to VerticeCount do
     Form1.Image1.Canvas.TextOut(VerticeXY[a].X-5, VerticeXY[a].Y-20, inttostr(a));
-  end;
+  Form1.Image1.Canvas.TextOut(round(Center.X / 0.6), round (Center.Y / 0.53), 'Frequency: '+inttostr(Graph.Freq)+' Hz');
+end;
+
 
 procedure TGraph.GenVerticeXY;
 var a,Radx, Rady:integer;
@@ -1628,8 +1782,8 @@ begin
       ObjParamName[1]:='Resistor';
       ObjParamName[2]:='Resistance, Ohm';
       ValueListEditor1.InsertRow('Object',ObjParamName[1],true);
-      ValueListEditor1.InsertRow(ObjParamName[2],inttostr(Graph.Edges[ObjectClicked].eR),true);
-      ValueListEditor1.InsertRow('Edge №',inttostr(Graph.Edges[ObjectClicked].ID),true);
+      ValueListEditor1.InsertRow(ObjParamName[2],floattostr(Graph.Edges[ObjectClicked].eR),true);
+    //  ValueListEditor1.InsertRow('Edge №',inttostr(Graph.Edges[ObjectClicked].ID),true);
     end;
     2: begin
       ObjParamName[1]:='Coil';
@@ -1648,7 +1802,7 @@ begin
       ObjParamName[2]:='Amplitude, A';
       ObjParamName[3]:='Phase, degrees';
       ValueListEditor1.InsertRow('Object',ObjParamName[1],true);
-      ValueListEditor1.InsertRow(ObjParamName[2],floattostr(Graph.Edges[ObjectClicked].IISAmp*sqrt(2)),true);
+      //ValueListEditor1.InsertRow(ObjParamName[2],floattostr(Graph.Edges[ObjectClicked].IISAmp*sqrt(2)),true);
       ValueListEditor1.InsertRow('RMS, A',floattostr(Graph.Edges[ObjectClicked].IISAmp),true);
       ValueListEditor1.InsertRow(ObjParamName[3],floattostr(Graph.Edges[ObjectClicked].IISPhase),true);
     end;
@@ -1657,7 +1811,7 @@ begin
       ObjParamName[2]:='Amplitude, V';
       ObjParamName[3]:='Phase, degrees';
       ValueListEditor1.InsertRow('Object',ObjParamName[1],true);
-      ValueListEditor1.InsertRow(ObjParamName[2],floattostr(Graph.Edges[ObjectClicked].IUSAmp*sqrt(2)),true);
+      //ValueListEditor1.InsertRow(ObjParamName[2],floattostr(Graph.Edges[ObjectClicked].IUSAmp*sqrt(2)),true);
       ValueListEditor1.InsertRow('RMS, V',floattostr(Graph.Edges[ObjectClicked].IUSAmp),true);
       ValueListEditor1.InsertRow(ObjParamName[3],floattostr(Graph.Edges[ObjectClicked].IUSPhase),true);
     end;
@@ -1748,6 +1902,17 @@ begin
   Graph.VerticeXY[3].Y:=round(Center.Y / 0.55);
   Graph.VerticeXY[1].X:=round(Center.X / 10);
   Graph.VerticeXY[1].Y:=round(Center.Y / 10);
+  Graph.VerticeXY[9].X:=round(Center.X / 1);
+  Graph.VerticeXY[9].Y:=round(Center.Y / 0.7);
+  Graph.VerticeXY[10].X:=round(Center.X / 1);
+  Graph.VerticeXY[10].Y:=round(Center.Y / 1.6);
+  Graph.VerticeXY[11].X:=round(Center.X / 0.7);
+  Graph.VerticeXY[11].Y:=round(Center.Y / 1);
+  Graph.VerticeXY[8].X:=round(Center.X / 2);
+  Graph.VerticeXY[8].Y:=round(Center.Y / 0.7);
+
+
+
   Graph.DrawGraph;
   EnableButtons;
 end;
@@ -1787,7 +1952,7 @@ end;
 procedure TForm1.Button8Click(Sender: TObject);
 var a,b: integer;
 begin
-  PrintMatrix (Graph.SolveCut);
+  PrintMatrix (Graph.SolveCut, true);
 end;
 
 procedure TForm1.Button9Click(Sender: TObject);
@@ -1870,7 +2035,7 @@ var a,b: integer;
 begin
   if locale='enGB' then label1.Caption:='Impendance Matrix';
   if locale='ruRU' then label1.Caption:='Матрица сопротивлений';
-  Graph.CreateMatrix;
+ // Graph.CreateMatrix;
   PrintMatrix(Graph.MZ);
 end;
 procedure TForm1.Button15Click(Sender: TObject);
@@ -1882,7 +2047,7 @@ end;
 procedure TForm1.Button16Click(Sender: TObject);
 begin
   Form4.show;
-
+  Form4.Image2.Picture.LoadFromFile('img/legend.jpg');
 end;
 
 procedure TForm1.Button17Click(Sender: TObject);
@@ -1897,7 +2062,7 @@ procedure TForm1.Button18Click(Sender: TObject);
 begin
   if locale='enGB' then label1.Caption:='Voltage Sources Matrix';
   if locale='ruRU' then label1.Caption:='Матрица источников ЭДС';
-  Graph.CreateMatrix;
+  //Graph.CreateMatrix;
   PrintMatrix(Graph.ME);
 
 end;
@@ -1914,14 +2079,15 @@ end;
 
 procedure TForm1.Button20Click(Sender: TObject);
 begin
-  Graph.SpreadCS(5);
+  button20.Enabled:=false;
+  PrintMatrix(Graph.SolveSynth, true);
 end;
 
 procedure TForm1.Button22Click(Sender: TObject);
 begin
   if locale='enGB' then label1.Caption:='Conductance Matrix';
   if locale='ruRU' then label1.Caption:='Матрица проводимостей';
-  Graph.CreateMatrix;
+ // Graph.CreateMatrix;
   PrintMatrix(Graph.MY);
 end;
 
@@ -1967,12 +2133,12 @@ end;
 
 procedure TForm1.Button7Click(Sender: TObject);
 begin
-  PrintMatrix (Graph.SolveNVM);
+  PrintMatrix (Graph.SolveNVM, true);
 end;
 
 procedure TForm1.Button11Click(Sender: TObject);
 begin
-  PrintMatrix(Graph.SolveMesh);
+  PrintMatrix(Graph.SolveMesh, true);
 end;
 
 end.

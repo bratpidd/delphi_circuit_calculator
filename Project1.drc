@@ -12,10 +12,11 @@
 #define ExtCtrls_clNameWindow 65249
 #define ExtCtrls_clNameWindowFrame 65250
 #define ExtCtrls_clNameWindowText 65251
-#define WinHelpViewer_hNoKeyword 65252
-#define JConsts_sChangeJPGSize 65253
-#define JConsts_sJPEGError 65254
-#define JConsts_sJPEGImageFile 65255
+#define ComStrs_sUDAssociated 65252
+#define WinHelpViewer_hNoKeyword 65253
+#define JConsts_sChangeJPGSize 65254
+#define JConsts_sJPEGError 65255
+#define JConsts_sJPEGImageFile 65256
 #define ExtCtrls_clNameBtnText 65264
 #define ExtCtrls_clNameCaptionText 65265
 #define ExtCtrls_clNameDefault 65266
@@ -294,6 +295,7 @@ BEGIN
 	ExtCtrls_clNameWindow,	"Window Background"
 	ExtCtrls_clNameWindowFrame,	"Window Frame"
 	ExtCtrls_clNameWindowText,	"Window Text"
+	ComStrs_sUDAssociated,	"%s is already associated with %s"
 	WinHelpViewer_hNoKeyword,	"No help keyword specified."
 	JConsts_sChangeJPGSize,	"Cannot change the size of a JPEG image"
 	JConsts_sJPEGError,	"JPEG error #%d"

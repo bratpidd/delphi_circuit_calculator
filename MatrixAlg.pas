@@ -39,7 +39,7 @@ begin
   for c:=1 to MA.X do
     for r:=1 to MA.Y do begin
       Result.Comp[c,r]:=ComplSub(MA.Comp[c,r], MB.Comp[c,r]);
-      Result.Body[c,r]:=MA.Body[c,r]-MB.Body[c,r];
+     // Result.Body[c,r]:=MA.Body[c,r]-MB.Body[c,r];
     end;
 end;
 
@@ -52,7 +52,7 @@ begin
   for c:=1 to MA.X do
     for r:=1 to MA.Y do begin
       Result.Comp[c,r]:=ComplAdd(MA.Comp[c,r], MB.Comp[c,r]);
-      Result.Body[c,r]:=MA.Body[c,r]+MB.Body[c,r];
+     // Result.Body[c,r]:=MA.Body[c,r]+MB.Body[c,r];
     end;
 end;
 
@@ -65,11 +65,11 @@ begin
   MAdj:=MatrixAdj(M);
   Result.X:=M.X;
   Result.Y:=M.Y;
-  det:=MatrixDet(M);
+  //det:=MatrixDet(M);
   compldet:=ComplMatrixDet(M);
   for r:=1 to M.Y do
     for c:=1 to M.X do begin
-      Result.Body[r,c]:=MAdj.Body[r,c]/det;
+//      Result.Body[r,c]:=MAdj.Body[r,c]/det;
       Result.Comp[r,c]:=ComplDiv(MAdj.Comp[r,c], compldet);
     end;
 end;
@@ -83,7 +83,7 @@ begin
   //MOp:=Transpose(M);
   for r:=1 to M.Y do
     for c:=1 to M.X do begin
-      Result.Body[r,c]:=AlgExt(M,c,r);
+  //    Result.Body[r,c]:=AlgExt(M,c,r);
       Result.Comp[r,c]:=ComplAlgExt(M,c,r);
     end;
   Result:=Transpose(Result);
@@ -116,7 +116,7 @@ begin
       if r<Row then y:=r else
         if r>Row then y:=r-1 else
           if r=Row then y:=0;
-      Result.Body[x,y]:=M.body[c,r];
+    //  Result.Body[x,y]:=M.body[c,r];
       Result.Comp[x,y]:=M.Comp[c,r];
       //Result.Re[x,y]:=M.Re[c,r];
       //Result.Im[x,y]:=M.Im[c,r];
@@ -186,7 +186,7 @@ begin
     for r:=1 to MA.Y do
       for c:=1 to MB.X do begin
         Result.Comp[c,r]:=ComplMultRowCol (MA, MB, r, c);
-        Result.Body[c,r]:=MultRowCol(MA, MB, r, c);
+    //    Result.Body[c,r]:=MultRowCol(MA, MB, r, c);
       end;
   end;
 end;
@@ -199,7 +199,7 @@ begin
   Result.Y:=M.X;
   for r:=1 to M.X do
     for c:=1 to M.Y do begin
-      Result.Body[c,r]:=M.body[r,c];
+    //  Result.Body[c,r]:=M.body[r,c];
       Result.Comp[c,r]:=M.Comp[r,c];
     end;
 end;
@@ -235,7 +235,7 @@ begin
   for a:=1 to Result.X do
     for b:=1 to Result.Y do begin
       Result.Comp[a,b]:=ComplMult(Result.Comp[a,b], Compl(r,0));
-      Result.Body[a,b]:=Result.Body[a,b]*r;
+   //   Result.Body[a,b]:=Result.Body[a,b]*r;
     end;
 end;
 
